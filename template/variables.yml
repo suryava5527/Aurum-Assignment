@@ -1,0 +1,10 @@
+parameters:
+- name: repositoryName
+  type: string
+
+variables:
+  organization: '$(System.CollectionUri)'
+  project: '$(System.TeamProject)'
+  repositoryName: '${{ parameters.repositoryName }}'
+  pat: '2l5eFYA6Nrf2Qk9WYZitHev9x3R4ZS09ef4ZjgWgsLJw5S7zFJZJJQQJ99BDACAAAAAAAAAAAAASAZDO3am6'
+  adminUser: 'sujeet7436gupta@gmail.com'

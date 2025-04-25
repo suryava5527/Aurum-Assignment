@@ -1,0 +1,129 @@
+parameters:
+- name: organization
+  type: string
+- name: project
+  type: string
+- name: repositoryName
+  type: string
+- name: pat
+  type: string
+
+
+stages:
+- stage: checkPermissions
+  displayName: 'Check Permissions on Default Branch'
+  dependsOn: getRepoIdAndDefaultBranch
+  jobs:
+  - job: CheckPermissions
+    displayName: 'Check Permissions on Default Branch'
+    variables:
+      defaultBranch: $[ stageDependencies.getRepoIdAndDefaultBranch.GetRepoID_and_Defaultbranch.outputs['getDefaultBranch.defaultBranch'] ]
+      repoId: $[ stageDependencies.getRepoIdAndDefaultBranch.GetRepoID_and_Defaultbranch.outputs['repoId.repoId'] ]
+
+    steps:
+    - task: PowerShell@2
+      displayName: 'Get Git Security Namespace'
+      name: GetGitSecurityNamespace
+      inputs:
+        targetType: 'inline'
+        script: |
+          $headers = @{
+            Authorization = "Basic $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$(pat)")))"
+          }
+
+          $uri = "$(organization)_apis/securitynamespaces?api-version=7.0"
+          Write-Host "Calling URI: $uri"
+
+          $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+
+          $gitNamespace = $response.value | Where-Object { $_.name -eq "Git Repositories" }
+
+          if ($gitNamespace -ne $null) {
+            $gitNamespaceId = $gitNamespace.namespaceId
+            Write-Host "##vso[task.setvariable variable=gitNamespaceId]$gitNamespaceId"
+            Write-Host "Git Security Namespace ID (set for pipeline): $gitNamespaceId"
+          } else {
+            Write-Error "Git Repositories namespace not found."
+          }
+          Write-Host "##vso[task.setvariable variable=gitNamespaceId;isOutput=true]$gitNamespaceId"
+
+    - task: PowerShell@2
+      displayName: 'Get Project id'
+      name: GetProjectId
+      inputs:
+        targetType: 'inline'
+        script: |
+
+          $headers = @{
+            Authorization = "Basic $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$(pat)")))"
+          }
+          # Get project ID
+          $projectUri = "$(organization)_apis/projects/$(project)?api-version=7.0"
+          $projResponse = Invoke-RestMethod -Uri $projectUri -Headers $headers
+          Write-Host "##vso[task.setvariable variable=projectId]$($projResponse.id)"
+          
+    - task: PowerShell@2
+      displayName: 'Check Permissions on Default Branch'
+      name: checkPermissions
+      inputs:
+        targetType: 'inline'
+        script: |
+          $headers = @{ Authorization = "Basic $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$(pat)")))" }
+
+          $projectId = "$(projectId)"
+          $repo = "$(repositoryName)"
+          $branch = "$(defaultBranch)"
+          $repoId = "$(repoId)"
+          $namespaceId = "$(gitNamespaceId)"
+
+          Write-Host "projectId is : '$projectId'"
+
+          $securityTokenRaw = "$repo\refs\heads\$branch"
+          $securityToken = [uri]::EscapeDataString($securityTokenRaw)
+
+          $permissions = @{
+              "ForcePush"                 = 4
+              "EditPolicies"              = 268435456
+              "BypassPoliciesPullRequest" = 8
+              "BypassPoliciesPush"        = 2
+          }
+
+
+          Write-Host "namespaceId is '$namespaceId'"
+          Write-Host "securityToken is '$securityToken'"
+                 
+          $uri = "$(organization)_apis/accesscontrollists/${namespaceId}?api-version=7.0"
+          Write-Host "uri is '$uri'"
+          $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method GET
+          $aces = $response.value
+          Write-Host "aces is '${aces}'"
+
+          foreach ($perm in $permissions.GetEnumerator()) {
+            $permName = $perm.Key
+            $permBit = $perm.Value
+            $isDenied = $false
+
+            Write-Host "Outside foreach and perm value is : '$perm'"
+
+            foreach ($ace in $aces) {
+              Write-Host "Inside foreach and ace value is : '$ace'"
+
+              if ($ace.descriptor -eq "Microsoft.TeamFoundation.Identity;S-1-1-0") {
+                if (($ace.denied -band $permBit) -eq $permBit) {
+                  $isDenied = $true
+                }
+              }
+            }
+
+            if ($isDenied) {
+              Write-Host " Permission '$permName' is correctly DENIED for Everyone for repository '$repo' on '$branch'"
+            } else {
+              Write-Warning " Permission '$permName' is NOT denied for Everyone for repository '$repo' on '$branch'"
+            }
+          }
+
+          Write-Host "##vso[task.setvariable variable=repoId;isOutput=true]$repoId"
+          Write-Host "##vso[task.setvariable variable=branch;isOutput=true]$branch"
+          Write-Host "##vso[task.setvariable variable=projectId;isOutput=true]$projectId"
+
+

@@ -1,0 +1,181 @@
+parameters:
+- name: organization
+  type: string
+- name: project
+  type: string
+- name: repositoryName
+  type: string
+- name: pat
+  type: string
+- name: adminUser
+  type: string
+
+stages:
+- stage: enforceBranchPolicieswithTempAccess
+  displayName: 'Enforce Branch Policies with Temporary Edit Access'
+  dependsOn: checkPermissions
+  jobs:
+  - job: checkAndFixPolicies
+    displayName: 'Check and Fix Branch Policies'
+    variables:
+      defaultBranch: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['checkPermissions.branch'] ]
+      repoId: $[ stageDependencies.checkPermissions.checkPermissions.outputs['checkPermissions.repoId'] ]
+      namespaceId: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['GetGitSecurityNamespace.gitNamespaceId'] ]
+      projectId: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['checkPermissions.projectId'] ]
+
+    steps:
+    - task: PowerShell@2
+      displayName: 'Check and Fix Branch Policies'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $organization = "$(organization)"
+          $project = "$(project)"
+          $repositoryName = "$(repositoryName)"
+          $defaultBranch = "$(defaultBranch)"
+          $repoId = "$(repoId)"
+          $namespaceId = "$(namespaceId)"
+          $projectId = "$(projectId)"
+          $pat = "$(pat)"
+          $adminUser = "${{ parameters.adminUser }}"
+          $securityToken = "repoV2/$projectId/$repoId/refs/heads/$defaultBranch"
+
+          Write-Host "projectId is : '$projectId'"
+          Write-Host "repo is : '$repositoryName'"
+          Write-Host "defaultBranch is : '$defaultBranch'"
+          Write-Host "repoId is : '$repoId'"
+          Write-Host "namespaceId is : '$namespaceId'"
+          Write-Host "securityToken is : '$securityToken'"
+
+          $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
+          $headers = @{ Authorization = "Basic $base64AuthInfo" }
+
+          $branchRef = "refs/heads/$defaultBranch"
+          $policyUrl = "$(organization)$(project)/_apis/policy/configurations?repositoryId=$(repoId)&refName=$branchRef&api-version=7.1-preview.1"
+          
+          Write-Host "Checking branch policies: '$policyUrl'"
+
+          $existingPolicies = Invoke-RestMethod -Uri $policyUrl -Headers $headers -Method Get
+
+          Write-Host "existingPolicies is : $($existingPolicies | ConvertTo-Json -Depth 5)"
+
+          if ($existingPolicies.count -eq 0 -or $existingPolicies.value.Count -eq 0) {
+            Write-Host "No branch policies found. Granting temporary 'Edit Policies' permission..."
+
+            $token = "repoV2/$projectId/$repoId/refs/heads/$defaultBranch"
+            Write-Host "token is '$token'"
+            $encodedToken = [System.Web.HttpUtility]::UrlEncode($token)
+            Write-Host "encodedToken is '$encodedToken'"
+
+            Write-Host "Fetching descriptor for user '$adminUser'..."
+            $collectionUri = "$(organization)"
+            $updatedUri = $collectionUri -replace "https://dev.azure.com", "https://vssps.dev.azure.com"
+
+            Write-Output "Updated URI: $updatedUri"
+
+            $graphUrl = "${updatedUri}_apis/graph/users?api-version=7.1-preview.1"
+            Write-Host "graphUrl is '$graphUrl'"
+            $graphResponse = Invoke-RestMethod -Uri $graphUrl -Headers $headers -Method Get
+
+            $user = $graphResponse.value | Where-Object { $_.principalName -eq $adminUser }
+
+            if (-not $user) {
+              throw "Could not find user with principalName '$adminUser'"
+            }
+
+            $graphDescriptor = $user.descriptor
+            Write-Host "graphDescriptor is : '$graphDescriptor'"
+
+            $identityUrl = "${updatedUri}_apis/identities?subjectDescriptors=$graphDescriptor&api-version=7.1"
+            Write-Host "identityUrl is : '$identityUrl'"
+            $identityResponse = Invoke-RestMethod -Uri $identityUrl -Headers $headers -Method Get
+            $subjectDescriptor = $identityResponse.value[0].descriptor
+
+            # Write-Host "Found descriptor: '$descriptor'"
+
+            Write-Host "Found Descriptor: '$subjectDescriptor'"
+
+            # Check for existing ACE (especially deny)
+            $checkPermissionUrl = "$(organization)_apis/accesscontrollists/${namespaceId}?tokens=$encodedToken&descriptors=$subjectDescriptor&api-version=7.1-preview.1"
+            Write-Host "checkPermissionUrl is : '$checkPermissionUrl'"
+            $permResponse = Invoke-RestMethod -Uri $checkPermissionUrl -Headers $headers -Method Get
+            
+            Write-Host "permResponse is : '$permResponse'"
+            $permResponse | ConvertTo-Json -Depth 5
+
+            foreach ($ace in $permResponse.value) {
+              Write-Host "ace deny value is : $($ace.deny)"
+              if ($ace.deny -band 4) {
+                Write-Host "Found explicit deny. Removing..."
+                $removeUrl = "$(organization)_apis/accesscontrolentries/${namespaceId}?api-version=7.1-preview.1"
+                $body = @{ accessControlEntries = @(@{ descriptor = $subjectDescriptor; token = $token }) } | ConvertTo-Json -Depth 10
+                Invoke-RestMethod -Uri $removeUrl -Headers $headers -Method Delete -Body $body -ContentType 'application/json'
+              }
+            }
+
+            $grantUrl = "$(organization)_apis/accesscontrolentries/${namespaceId}?api-version=7.1-preview.1"
+            $body = @{ 
+              merge = $true
+              token = $token
+              accessControlEntries = @(@{
+                descriptor = $subjectDescriptor
+                allow = 4
+                deny = 0
+              }) 
+            } | ConvertTo-Json -Depth 10
+
+            Write-Host "Sending body: $body"
+
+            Invoke-RestMethod -Uri $grantUrl -Headers $headers -Method Post -Body $body -ContentType 'application/json'
+            Write-Host "Temporary permission granted."
+
+            Start-Sleep -Seconds 10
+
+            $createPolicyUrl = "$(organization)$(project)/_apis/policy/configurations?api-version=7.1-preview.1"
+            Write-Host "Setting required branch policy..."
+            Write-Host "createPolicyUrl : '$createPolicyUrl'"
+
+            $policyBody = @{
+              isEnabled = $true
+              isBlocking = $true
+              type = @{ id = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd" }
+              settings = @{
+                minimumApproverCount = 1
+                creatorVoteCounts = $false
+                allowDownvotes = $false
+                resetOnSourcePush = $true
+                scope = @(@{
+                  repositoryId = $repoId
+                  refName = "refs/heads/$defaultBranch"
+                  matchKind = "Exact"
+                })
+              }
+            }
+
+            $policyBodyConverted = $policyBody | ConvertTo-Json -Depth 10 -Compress
+
+            Write-Host "Sending policyBody: $policyBodyConverted"
+
+            Invoke-RestMethod -Uri $createPolicyUrl -Headers $headers -Method Post -Body $policyBodyConverted -ContentType 'application/json'
+            Write-Host "Branch policy set."
+
+            # Revoke permission
+            $revokeBody = @{
+              token = $token
+              merge = $true
+              accessControlEntries = @(@{
+                descriptor = $subjectDescriptor
+                allow = 0
+                deny = 4
+              })
+            } | ConvertTo-Json -Depth 10
+
+            Write-Host "Revoking temporary permission..."
+            Invoke-RestMethod -Uri $grantUrl -Headers $headers -Method Post -Body $revokeBody
+
+            Write-Host "Policy enforced and permissions cleaned up."
+          }
+          else {
+            Write-Host "Branch policies already exist. No changes needed."
+          }
+    

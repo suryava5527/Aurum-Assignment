@@ -1,0 +1,75 @@
+trigger:
+- main
+- feature/*
+
+# Agent pool
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+- name: repositoryName
+  displayName: "Repository Name"
+  type: string
+  default: 'Aurum-Assignment'
+
+variables:
+  - name: deploymentStrategy
+    value: 'canary'  # default strategy, We can update to Blue-Green strategy also
+  - template: template/variables.yml
+    parameters:
+      repositoryName: ${{ parameters.repositoryName }}
+
+stages:
+# Get Repo Id and Default Branch
+- template: template/repoId-defaultbranch.yml
+  parameters: 
+    organization: ${{ variables.organization }}
+    project: ${{ variables.project }}
+    repositoryName: ${{ parameters.repositoryName }}
+    pat: ${{ variables.pat }}
+
+# Check required permissions on default Branch
+- template: template/check-permissions.yml
+  parameters: 
+    organization: ${{ variables.organization }}
+    project: ${{ variables.project }}
+    repositoryName: ${{ parameters.repositoryName }}
+    pat: ${{ variables.pat }}
+
+# Check required policy on default branch
+- template: template/check-branchpolicy.yml
+  parameters: 
+    organization: ${{ variables.organization }}
+    project: ${{ variables.project }}
+    repositoryName: ${{ parameters.repositoryName }}
+    pat: ${{ variables.pat }}
+
+# Enforce required permissions on default Branch
+- template: template/set-permissions.yml
+  parameters: 
+    organization: ${{ variables.organization }}
+    project: ${{ variables.project }}
+    repositoryName: ${{ parameters.repositoryName }}
+    pat: ${{ variables.pat }}
+  
+# Check and Enforce required Branch Policy on default Branch
+- template: template/set-branchpolicy.yml
+  parameters: 
+    organization: ${{ variables.organization }}
+    project: ${{ variables.project }}
+    repositoryName: ${{ parameters.repositoryName }}
+    pat: ${{ variables.pat }}
+
+# Canary and blue green deployment strategies
+- template: template/deploy-strategy.yml
+  parameters:
+    strategy: ${{ variables.deploymentStrategy }}
+
+# Enforce branch policy with temporary Edit Access
+- template: template/BranchPoliciesWithTemporaryEditAccess.yml
+  parameters:
+    organization: ${{ variables.organization }}
+    project: ${{ variables.project }}
+    repositoryName: ${{ parameters.repositoryName }}
+    pat: ${{ variables.pat }}
+    adminUser: ${{ variables.adminUser }}

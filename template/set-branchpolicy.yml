@@ -1,0 +1,96 @@
+parameters:
+- name: organization
+  type: string
+- name: project
+  type: string
+- name: repositoryName
+  type: string
+- name: pat
+  type: string
+
+stages:
+- stage: setBranchPolicy
+  displayName: 'Set Branch policy on Default Branch'
+  dependsOn: checkPermissions
+  jobs:
+  - job: EnforcePRPolicy
+    displayName: 'Set Branch policy on Default Branch'
+    variables:
+      defaultBranch: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['checkPermissions.branch'] ]
+      repoId: $[ stageDependencies.checkPermissions.checkPermissions.outputs['checkPermissions.repoId'] ]
+      namespaceId: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['GetGitSecurityNamespace.gitNamespaceId'] ]
+      projectId: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['checkPermissions.projectId'] ]
+
+    steps:
+    - task: PowerShell@2
+      displayName: 'Check and Enforce Branch PR Policy'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $ErrorActionPreference = "Stop"
+
+          $organization = "$(organization)"
+          $project = "$(project)"
+          $repositoryName = "$(repositoryName)"
+          $defaultBranch = "$(defaultBranch)"
+          $repoId = "$(repoId)"
+          $namespaceId = "$(namespaceId)"
+          $projectId = "$(projectId)"
+          $pat = "$(pat)"
+          $securityToken = "repoV2/$projectId/$repoId/refs/heads/$branch"
+
+          Write-Host "projectId is : '$projectId'"
+          Write-Host "repo is : '$repositoryName'"
+          Write-Host "defaultBranch is : '$defaultBranch'"
+          Write-Host "repoId is : '$repoId'"
+          Write-Host "namespaceId is : '$namespaceId'"
+          Write-Host "securityToken is : '$securityToken'"
+
+          # Prepare base64-encoded PAT for Authorization header
+          $headers = @{
+            Authorization = ("Basic {0}" -f [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat")))
+            "Content-Type" = "application/json"
+          }
+
+          # Get current PR policies
+          Write-Host "Checking existing policies..."
+          $policiesUrl = "$(organization)$(project)/_apis/policy/configurations?repositoryId=$(repoId)&api-version=7.0"
+          Write-Host "policiesUrl is : '$policiesUrl'"
+          $policiesResponse = Invoke-RestMethod -Uri $policiesUrl -Headers $headers -Method Get
+
+          $existingPolicy = $policiesResponse.value | Where-Object {
+            $_.type.displayName -eq "Minimum number of reviewers" -and
+            $_.settings.minimumApproverCount -eq 2 -and
+            $_.settings.resetOnSourcePush -eq $true -and
+            $_.settings.scope[0].refName -eq "refs/heads/$defaultBranch"
+          }
+
+          if ($existingPolicy) {
+            Write-Host "Matching policy already exists. Policy ID: $($existingPolicy.id)"
+          } else {
+            Write-Host "No matching policy found. Creating a new policy..."
+
+            $policyBody = @{
+              type = @{
+                id = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"  # PR reviewers policy ID
+              }
+              settings = @{
+                minimumApproverCount = 2
+                creatorVoteCounts = $false
+                allowDownvotes = $false
+                resetOnSourcePush = $true
+                scope = @(@{
+                  refName = "refs/heads/$defaultBranch"
+                  matchKind = "Exact"
+                  repositoryId = $repoId
+                })
+              }
+              isEnabled = $true
+              isBlocking = $true
+            }
+
+            $policyCreateUrl = "$(organization)$(project)/_apis/policy/configurations?api-version=7.0"
+            $jsonBody = $policyBody | ConvertTo-Json -Depth 10
+            $response = Invoke-RestMethod -Uri $policyCreateUrl -Headers $headers -Method Post -Body $jsonBody
+            Write-Host "Policy created. New Policy ID: $($response.id)"
+          }

@@ -1,0 +1,88 @@
+parameters:
+- name: organization
+  type: string
+- name: project
+  type: string
+- name: repositoryName
+  type: string
+- name: pat
+  type: string
+
+stages:
+- stage: setPermissions
+  displayName: 'Set Permissions on Default Branch'
+  dependsOn: checkPermissions
+  jobs:
+  - job: SetPermissionsonDefaultBranch
+    displayName: 'Set Permissions on Default Branch'
+    variables:
+      defaultBranch: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['checkPermissions.branch'] ]
+      repoId: $[ stageDependencies.checkPermissions.checkPermissions.outputs['checkPermissions.repoId'] ]
+      namespaceId: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['GetGitSecurityNamespace.gitNamespaceId'] ]
+      projectId: $[ stageDependencies.checkPermissions.CheckPermissions.outputs['checkPermissions.projectId'] ]
+
+    steps:
+    - task: PowerShell@2
+      displayName: 'Check & Set Permissions on Default Branch'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $ErrorActionPreference = "Stop"
+
+          $repo = "$(repositoryName)"
+          $branch = "$(defaultBranch)"
+          $repoId = "$(repoId)"
+          $namespaceId = "$(namespaceId)"
+          $projectId = "$(projectId)"
+          $securityToken = "repoV2/$projectId/$repoId/refs/heads/$branch"
+
+          Write-Host "projectId is : '$projectId'"
+          Write-Host "repo is : '$repo'"
+          Write-Host "branch is : '$branch'"
+          Write-Host "repoId is : '$repoId'"
+          Write-Host "namespaceId is : '$namespaceId'"
+          Write-Host "securityToken is : '$securityToken'"
+
+          $permissions = @{
+            "ForcePush" = 4
+            "EditPolicies" = 268435456
+            "BypassPoliciesPullRequest" = 8
+            "BypassPoliciesPush" = 2
+          }
+
+          # SID for "Everyone" group
+          $everyoneDescriptor = "Microsoft.TeamFoundation.Identity;S-1-9-0-0-0"
+
+          # $headers = @{ Authorization = "Basic $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$(pat)")))" }
+
+          $headers = @{
+            Authorization = "Bearer $(pat)"
+            "Content-Type" = "application/json"
+          }
+
+          foreach ($perm in $permissions.GetEnumerator()) {
+            $permName = $perm.Key
+            $permBit = $perm.Value
+
+            $body = @{
+              token = $securityToken
+              merge = $true
+              accessControlEntries = @(
+                @{
+                  descriptor = $everyoneDescriptor
+                  allow = 0
+                  deny = $permBit
+                }
+              )
+            } | ConvertTo-Json -Depth 5
+
+            $uri = "$(organization)_apis/accesscontrolentries/${namespaceId}?api-version=7.0"
+            Write-Host "uri is : '$uri'"
+            $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $body
+
+            Write-Host "Enforced DENY for '$permName'"
+          }
+
+          
+
+          

@@ -1,0 +1,36 @@
+parameters:
+- name: strategy
+  type: string
+
+stages:
+- stage: Deploy
+  displayName: 'Deploy Stage'
+  dependsOn: setBranchPolicy
+  jobs:
+    - deployment: DeployApp
+      displayName: Deploy Application
+      environment: 'production'
+      strategy:
+        ${{ if eq(parameters.strategy, 'canary') }}:
+          runOnce:
+            deploy:
+              steps:
+                - script: | 
+                    echo "Performing CANARY deployment..."
+                  displayName: 'Performing CANARY deployment'
+                - script: |
+                    echo "Deploying a small portion of traffic..."
+                  displayName: 'Deploying a small portion of traffic'
+        ${{ if eq(parameters.strategy, 'bluegreen') }}:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "Performing BLUE-GREEN deployment..."
+                  displayName: 'Performing BLUE-GREEN deployment'
+                - script: |
+                    echo "Deploying to staging environment (green)"
+                  displayName: 'Deploying to staging environment'
+                - script: |
+                    echo "Switching traffic from blue to green"
+                  displayName: 'Switching traffic from blue to green'

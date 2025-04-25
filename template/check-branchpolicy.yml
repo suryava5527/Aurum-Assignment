@@ -1,0 +1,54 @@
+parameters:
+- name: organization
+  type: string
+- name: project
+  type: string
+- name: repositoryName
+  type: string
+- name: pat
+  type: string
+
+
+stages:
+- stage: checkBranchPolicy
+  displayName: 'Check Branch policy on Default Branch'
+  dependsOn: getRepoIdAndDefaultBranch
+  jobs:
+  - job: checkBranchPolicyOnDefault
+    displayName: 'Check Branch policy on Default Branch'
+    variables:
+      defaultBranch: $[ stageDependencies.getRepoIdAndDefaultBranch.GetRepoID_and_Defaultbranch.outputs['getDefaultBranch.defaultBranch'] ]
+      repoId: $[ stageDependencies.getRepoIdAndDefaultBranch.GetRepoID_and_Defaultbranch.outputs['repoId.repoId'] ]
+
+    steps:
+    - task: PowerShell@2
+      displayName: 'Check Branch Policies & Requirements'
+      inputs:
+        targetType: 'inline'
+        script: |
+
+          $headers = @{ Authorization = "Basic $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$(pat)")))" }
+
+          $policiesUrl = "$(organization)$(project)/_apis/policy/configurations?repositoryId=$(repoId)&refName=refs/heads/$(defaultBranch)&api-version=7.0"
+          
+          Write-Host "policiesUrl is : '$policiesUrl'"
+
+          $policies = Invoke-RestMethod -Uri $policiesUrl -Headers $headers -Method Get
+
+          $matchFound = $false
+
+          foreach ($policy in $policies.value) {
+            Write-Host "policy is : $policy"
+            if ($policy.type.displayName -eq "Minimum number of reviewers") {
+                $settings = $policy.settings
+                Write-Host "settings is : '$settings'"
+                if ($settings.minimumApproverCount -eq 2 -and $settings.resetOnSourcePush -eq $true) {
+                    Write-Output " Policy match found: Minimum 2 reviewers and reset on push is enabled for repository $(repositoryName) on Default branch $(defaultBranch) ."
+                    $matchFound = $true
+                }
+            }
+          }
+
+          if (-not $matchFound) {
+              Write-Output " No matching policy found for repository $(repositoryName) on Default branch $(defaultBranch)."
+          }

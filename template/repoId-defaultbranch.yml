@@ -1,0 +1,33 @@
+parameters:
+- name: organization
+  type: string
+- name: project
+  type: string
+- name: repositoryName
+  type: string
+- name: pat
+  type: string
+
+
+stages:
+- stage: getRepoIdAndDefaultBranch
+  displayName: 'RepoID & Default Branch'
+  jobs:
+  - job: GetRepoID_and_Defaultbranch
+    displayName: 'Get repo ID & Default branch'
+    steps:
+    # Get Azure DevOps Repo Id
+    - task: PowerShell@2
+      displayName: 'Get Azure DevOps Repo ID'
+      name: repoId
+      inputs:
+        filePath: './scripts/Get-RepoId.ps1'
+        arguments: '-organization $(organization) -project $(project) -repositoryName $(repositoryName) -accessToken $(pat)'
+
+    # Get Default Branch of given Repository
+    - task: PowerShell@2
+      displayName: 'Get Default branch Name'
+      name: getDefaultBranch
+      inputs:
+        filePath: './scripts/get-DefaultBranch.ps1'
+        arguments: '-organization $(organization) -project $(project) -repositoryName $(repositoryName) -accessToken $(pat)'
