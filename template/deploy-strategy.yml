@@ -9,7 +9,7 @@ stages:
   jobs:
     - deployment: DeployApp
       displayName: Deploy Application
-      environment: 'production'
+      environment: 'test'
       strategy:
         ${{ if eq(parameters.strategy, 'canary') }}:
           runOnce:
